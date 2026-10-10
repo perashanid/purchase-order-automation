@@ -1,0 +1,433 @@
+{
+  "name": "Purchase Order Automation with Escalation",
+  "description": "Complete Make.com scenario template for automated PO generation and supplier escalation",
+  "version": "1.0",
+  "flow": [
+    {
+      "id": 1,
+      "module": "google-sheets:watchRows",
+      "name": "Watch Low Stock Items",
+      "config": {
+        "connection": "{{google_sheets_connection}}",
+        "spreadsheetId": "{{your_spreadsheet_id}}",
+        "sheetName": "Inventory",
+        "filter": {
+          "column": "Current Stock",
+          "operator": "lessThan",
+          "value": "{{Reorder Threshold}}"
+        },
+        "triggerType": "scheduled",
+        "schedule": "every 6 hours"
+      },
+      "outputs": [
+        "Product Name",
+        "SKU",
+        "Current Stock",
+        "Reorder Threshold"
+      ]
+    },
+    
+    {
+      "id": 2,
+      "module": "google-sheets:searchRows",
+      "name": "Get Supplier Info",
+      "config": {
+        "connection": "{{google_sheets_connection}}",
+        "spreadsheetId": "{{your_spreadsheet_id}}",
+        "sheetName": "Suppliers",
+        "filter": {
+          "column": "SKU",
+          "operator": "equals",
+          "value": "{{1.SKU}}"
+        }
+      },
+      "outputs": [
+        "Primary Supplier Name",
+        "Primary Email",
+        "Primary Phone",
+        "Backup Supplier Name",
+        "Backup Email",
+        "Backup Phone"
+      ]
+    },
+    
+    {
+      "id": 3,
+      "module": "http:makeRequest",
+      "name": "Generate Purchase Order",
+      "config": {
+        "url": "https://your-server.com/webhook/inventory-check",
+        "method": "POST",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "name": "Authorization",
+            "value": "Bearer {{env.API_KEY}}"
+          }
+        ],
+        "body": {
+          "product_name": "{{1.Product Name}}",
+          "sku": "{{1.SKU}}",
+          "current_stock": "{{1.Current Stock}}",
+          "reorder_threshold": "{{1.Reorder Threshold}}",
+          "supplier": {
+            "name": "{{2.Primary Supplier Name}}",
+            "email": "{{2.Primary Email}}",
+            "phone": "{{2.Primary Phone}}"
+          },
+          "backup_supplier": {
+            "name": "{{2.Backup Supplier Name}}",
+            "email": "{{2.Backup Email}}",
+            "phone": "{{2.Backup Phone}}"
+          }
+        },
+        "parseResponse": true
+      },
+      "outputs": [
+        "needs_reorder",
+        "po_data",
+        "email"
+      ]
+    },
+    
+    {
+      "id": 4,
+      "module": "builtin:filter",
+      "name": "Filter: Only if Reorder Needed",
+      "config": {
+        "condition": [
+          {
+            "field": "{{3.needs_reorder}}",
+            "operator": "equals",
+            "value": true
+          }
+        ]
+      }
+    },
+    
+    {
+      "id": 5,
+      "module": "google-sheets:addRow",
+      "name": "Create PO Record",
+      "config": {
+        "connection": "{{google_sheets_connection}}",
+        "spreadsheetId": "{{your_spreadsheet_id}}",
+        "sheetName": "Purchase Orders",
+        "values": [
+          "{{3.po_data.po_number}}",
+          "{{3.po_data.product}}",
+          "{{3.po_data.sku}}",
+          "{{3.po_data.quantity}}",
+          "{{3.po_data.supplier.name}}",
+          "Pending",
+          "{{3.po_data.created_at}}",
+          "{{3.po_data.requested_delivery}}",
+          "",
+          ""
+        ]
+      },
+      "note": "Columns: PO Number | Product | SKU | Quantity | Supplier | Status | Created | Delivery | Confirmed At | Escalated At"
+    },
+    
+    {
+      "id": 6,
+      "module": "gmail:sendEmail",
+      "name": "Send PO to Primary Supplier",
+      "config": {
+        "connection": "{{gmail_connection}}",
+        "to": "{{3.email.to}}",
+        "subject": "{{3.email.subject}}",
+        "body": "{{3.email.body}}",
+        "bodyType": "text",
+        "cc": "procurement@yourcompany.com",
+        "from": "procurement@yourcompany.com"
+      }
+    },
+    
+    {
+      "id": 7,
+      "module": "google-sheets:updateRow",
+      "name": "Update Inventory with PO Info",
+      "config": {
+        "connection": "{{google_sheets_connection}}",
+        "spreadsheetId": "{{your_spreadsheet_id}}",
+        "sheetName": "Inventory",
+        "searchColumn": "SKU",
+        "searchValue": "{{1.SKU}}",
+        "values": {
+          "Last PO": "{{3.po_data.po_number}}",
+          "Status": "PO Sent",
+          "Last Checked": "{{now}}"
+        }
+      }
+    },
+    
+    {
+      "id": 8,
+      "module": "datastore:set",
+      "name": "Store PO Send Timestamp",
+      "config": {
+        "dataStore": "PO_Tracking",
+        "key": "{{3.po_data.po_number}}",
+        "value": {
+          "po_number": "{{3.po_data.po_number}}",
+          "sent_at": "{{now}}",
+          "supplier_email": "{{3.email.to}}",
+          "backup_supplier": "{{2.Backup Supplier Name}}",
+          "backup_email": "{{2.Backup Email}}",
+          "status": "pending_confirmation"
+        }
+      }
+    },
+    
+    {
+      "id": 9,
+      "module": "tools:sleep",
+      "name": "Wait 24 Hours",
+      "config": {
+        "delay": 86400
+      },
+      "note": "86400 seconds = 24 hours"
+    },
+    
+    {
+      "id": 10,
+      "module": "gmail:searchEmails",
+      "name": "Check for Supplier Reply",
+      "config": {
+        "connection": "{{gmail_connection}}",
+        "query": "from:{{3.po_data.supplier.email}} subject:{{3.po_data.po_number}} after:{{formatDate(now, 'YYYY/MM/DD')}}",
+        "maxResults": 1
+      },
+      "outputs": [
+        "messageId",
+        "subject",
+        "from"
+      ]
+    },
+    
+    {
+      "id": 11,
+      "module": "builtin:router",
+      "name": "Route Based on Response",
+      "routes": [
+        {
+          "id": "route_a",
+          "name": "Supplier Confirmed",
+          "condition": "{{10.messageId}} != empty",
+          "modules": [
+            {
+              "id": 12,
+              "module": "google-sheets:updateRow",
+              "name": "Update Status: Confirmed",
+              "config": {
+                "connection": "{{google_sheets_connection}}",
+                "spreadsheetId": "{{your_spreadsheet_id}}",
+                "sheetName": "Purchase Orders",
+                "searchColumn": "PO Number",
+                "searchValue": "{{3.po_data.po_number}}",
+                "values": {
+                  "Status": "Confirmed",
+                  "Confirmed At": "{{now}}"
+                }
+              }
+            },
+            {
+              "id": 13,
+              "module": "slack:createMessage",
+              "name": "Notify Success",
+              "config": {
+                "connection": "{{slack_connection}}",
+                "channel": "#procurement",
+                "text": "✅ *PO Confirmed*\n\nPO Number: {{3.po_data.po_number}}\nProduct: {{3.po_data.product}}\nSupplier: {{3.po_data.supplier.name}}\nQuantity: {{3.po_data.quantity}} units\nExpected Delivery: {{3.po_data.requested_delivery}}\n\nStatus: Confirmed by primary supplier"
+              }
+            },
+            {
+              "id": 14,
+              "module": "datastore:set",
+              "name": "Update Tracking Status",
+              "config": {
+                "dataStore": "PO_Tracking",
+                "key": "{{3.po_data.po_number}}",
+                "value": {
+                  "status": "confirmed",
+                  "confirmed_at": "{{now}}"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": "route_b",
+          "name": "No Response - Escalate",
+          "condition": "{{10.messageId}} = empty",
+          "modules": [
+            {
+              "id": 15,
+              "module": "http:makeRequest",
+              "name": "Generate Escalation Email",
+              "config": {
+                "url": "https://your-server.com/webhook/escalate-po",
+                "method": "POST",
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "po_data": "{{3.po_data}}",
+                  "backup_supplier": {
+                    "name": "{{2.Backup Supplier Name}}",
+                    "email": "{{2.Backup Email}}"
+                  },
+                  "primary_supplier_name": "{{3.po_data.supplier.name}}"
+                }
+              }
+            },
+            {
+              "id": 16,
+              "module": "google-sheets:updateRow",
+              "name": "Update Status: Escalated",
+              "config": {
+                "connection": "{{google_sheets_connection}}",
+                "spreadsheetId": "{{your_spreadsheet_id}}",
+                "sheetName": "Purchase Orders",
+                "searchColumn": "PO Number",
+                "searchValue": "{{3.po_data.po_number}}",
+                "values": {
+                  "Status": "Escalated",
+                  "Escalated At": "{{now}}",
+                  "Notes": "Primary supplier no response - escalated to {{2.Backup Supplier Name}}"
+                }
+              }
+            },
+            {
+              "id": 17,
+              "module": "gmail:sendEmail",
+              "name": "Send Escalation to Backup",
+              "config": {
+                "connection": "{{gmail_connection}}",
+                "to": "{{15.escalation_data.to}}",
+                "subject": "{{15.escalation_data.subject}}",
+                "body": "{{15.escalation_data.body}}",
+                "importance": "high",
+                "cc": "procurement@yourcompany.com,operations@yourcompany.com"
+              }
+            },
+            {
+              "id": 18,
+              "module": "slack:createMessage",
+              "name": "Alert Operations Team",
+              "config": {
+                "connection": "{{slack_connection}}",
+                "channel": "#procurement-urgent",
+                "text": "⚠️ *PO ESCALATION*\n\n*Original PO:* {{3.po_data.po_number}}\n*Product:* {{3.po_data.product}}\n*SKU:* {{3.po_data.sku}}\n*Quantity:* {{3.po_data.quantity}} units\n*Current Stock:* {{3.po_data.current_stock}} units\n\n*Primary Supplier:* {{3.po_data.supplier.name}} (NO RESPONSE after 24 hours)\n*Escalated To:* {{2.Backup Supplier Name}}\n*Escalated PO:* {{15.escalation_data.escalated_po_number}}\n\n*Action Required:* Monitor backup supplier response within 12 hours.\n\n@ops-team",
+                "linkNames": true
+              }
+            },
+            {
+              "id": 19,
+              "module": "twilio:sendSMS",
+              "name": "Send SMS Alert (Optional)",
+              "config": {
+                "connection": "{{twilio_connection}}",
+                "to": "{{env.OPS_MANAGER_PHONE}}",
+                "body": "URGENT: PO {{3.po_data.po_number}} escalated to backup supplier. Check Slack #procurement-urgent for details."
+              },
+              "note": "Optional - only if SMS alerts are required"
+            },
+            {
+              "id": 20,
+              "module": "datastore:set",
+              "name": "Update Tracking: Escalated",
+              "config": {
+                "dataStore": "PO_Tracking",
+                "key": "{{3.po_data.po_number}}",
+                "value": {
+                  "status": "escalated",
+                  "escalated_at": "{{now}}",
+                  "escalated_to": "{{2.Backup Supplier Name}}"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  
+  "required_connections": [
+    {
+      "type": "google-sheets",
+      "name": "Google Sheets Connection",
+      "scopes": ["https://www.googleapis.com/auth/spreadsheets"]
+    },
+    {
+      "type": "gmail",
+      "name": "Gmail Connection",
+      "scopes": ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.readonly"]
+    },
+    {
+      "type": "slack",
+      "name": "Slack Connection",
+      "permissions": ["chat:write", "channels:read"]
+    },
+    {
+      "type": "twilio",
+      "name": "Twilio Connection (Optional)",
+      "note": "Only needed if SMS alerts are enabled"
+    }
+  ],
+  
+  "environment_variables": {
+    "API_KEY": "Your webhook authentication key",
+    "OPS_MANAGER_PHONE": "+1-555-0100",
+    "WEBHOOK_URL": "https://your-server.com"
+  },
+  
+  "data_stores": [
+    {
+      "name": "PO_Tracking",
+      "description": "Stores PO status and timestamps for tracking",
+      "type": "key-value",
+      "ttl": 2592000,
+      "note": "TTL = 30 days (2592000 seconds)"
+    }
+  ],
+  
+  "setup_instructions": [
+    "1. Import this JSON into Make.com scenario builder",
+    "2. Connect all required accounts (Google Sheets, Gmail, Slack)",
+    "3. Update {{your_spreadsheet_id}} with your actual Google Sheets ID",
+    "4. Configure webhook URL with your server address",
+    "5. Set up environment variables in Make.com settings",
+    "6. Create Data Store 'PO_Tracking' in Make.com",
+    "7. Test each module individually before enabling full scenario",
+    "8. Set scenario schedule to run every 4-6 hours",
+    "9. Enable error handling and email notifications for failures"
+  ],
+  
+  "testing_checklist": [
+    "☐ Test with single low-stock item",
+    "☐ Verify PO email is sent correctly",
+    "☐ Check Google Sheets record creation",
+    "☐ Test 24-hour delay (use shorter delay for testing)",
+    "☐ Verify supplier reply detection works",
+    "☐ Test escalation path when no reply",
+    "☐ Check Slack notifications are received",
+    "☐ Verify data store updates",
+    "☐ Test with stock above threshold (should not trigger)",
+    "☐ Test error handling for invalid data"
+  ],
+  
+  "notes": {
+    "delay_testing": "For testing, change sleep duration from 86400 (24h) to 300 (5 min)",
+    "costs": "Make.com operations count: ~15-20 ops per complete cycle",
+    "error_handling": "Add error handlers to each module for production use",
+    "scaling": "Use Iterator module if processing multiple low-stock items simultaneously"
+  }
+}

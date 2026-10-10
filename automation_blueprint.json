@@ -1,0 +1,399 @@
+{
+  "automation_name": "Intelligent Purchase Order & Escalation System",
+  "description": "Monitors inventory, auto-generates POs, and escalates to backup suppliers when needed",
+  "platforms": ["Make.com", "Zapier", "n8n"],
+  
+  "workflow_steps": [
+    {
+      "step": 1,
+      "name": "Inventory Level Monitor",
+      "type": "Trigger",
+      "schedule": "Every 4-6 hours",
+      "sources": [
+        {
+          "platform": "Shopify",
+          "trigger": "Watch Inventory Levels",
+          "filter": "inventory_quantity < reorder_threshold"
+        },
+        {
+          "platform": "Google Sheets",
+          "trigger": "Watch Rows",
+          "filter": "Column 'Current Stock' < Column 'Reorder Threshold'"
+        },
+        {
+          "platform": "Airtable",
+          "trigger": "Watch Records",
+          "view": "Low Stock View"
+        },
+        {
+          "platform": "Custom Database",
+          "method": "Scheduled SQL Query",
+          "query": "SELECT * FROM inventory WHERE current_stock < reorder_threshold"
+        }
+      ],
+      "output": {
+        "product_name": "{{product_name}}",
+        "sku": "{{sku}}",
+        "current_stock": "{{current_stock}}",
+        "reorder_threshold": "{{reorder_threshold}}",
+        "supplier_info": "{{supplier_data}}"
+      }
+    },
+    
+    {
+      "step": 2,
+      "name": "Stock Level Filter",
+      "type": "Filter/Router",
+      "condition": "current_stock < reorder_threshold",
+      "action_if_true": "Continue to PO generation",
+      "action_if_false": "Stop workflow - stock adequate",
+      "logic": "{{step1.current_stock}} < {{step1.reorder_threshold}}"
+    },
+    
+    {
+      "step": 3,
+      "name": "Generate Purchase Order",
+      "type": "HTTP Request",
+      "method": "POST",
+      "url": "https://your-server.com/webhook/inventory-check",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{env.API_KEY}}"
+      },
+      "body": {
+        "product_name": "{{step1.product_name}}",
+        "sku": "{{step1.sku}}",
+        "current_stock": "{{step1.current_stock}}",
+        "reorder_threshold": "{{step1.reorder_threshold}}",
+        "supplier": {
+          "name": "{{step1.supplier_name}}",
+          "email": "{{step1.supplier_email}}",
+          "phone": "{{step1.supplier_phone}}"
+        },
+        "backup_supplier": {
+          "name": "{{step1.backup_supplier_name}}",
+          "email": "{{step1.backup_supplier_email}}",
+          "phone": "{{step1.backup_supplier_phone}}"
+        }
+      },
+      "output": {
+        "po_data": "{{response.po_data}}",
+        "email_to_send": "{{response.email}}",
+        "backup_supplier": "{{response.backup_supplier}}"
+      }
+    },
+    
+    {
+      "step": 4,
+      "name": "Create PO Record",
+      "type": "Data Storage",
+      "actions": [
+        {
+          "platform": "Google Sheets",
+          "action": "Add Row",
+          "sheet": "Purchase Orders",
+          "data": {
+            "PO Number": "{{step3.po_data.po_number}}",
+            "Product": "{{step3.po_data.product}}",
+            "SKU": "{{step3.po_data.sku}}",
+            "Quantity": "{{step3.po_data.quantity}}",
+            "Supplier": "{{step3.po_data.supplier.name}}",
+            "Requested Delivery": "{{step3.po_data.requested_delivery}}",
+            "Status": "Pending",
+            "Created": "{{step3.po_data.created_at}}",
+            "Email Sent": "{{now}}"
+          }
+        },
+        {
+          "platform": "Airtable",
+          "action": "Create Record",
+          "table": "Purchase Orders",
+          "fields": "Same as above"
+        }
+      ]
+    },
+    
+    {
+      "step": 5,
+      "name": "Send PO to Primary Supplier",
+      "type": "Email",
+      "platforms": ["Gmail", "Outlook", "SendGrid"],
+      "config": {
+        "to": "{{step3.email_to_send.to}}",
+        "subject": "{{step3.email_to_send.subject}}",
+        "body": "{{step3.email_to_send.body}}",
+        "from": "procurement@yourcompany.com",
+        "cc": "operations@yourcompany.com",
+        "attachments": []
+      }
+    },
+    
+    {
+      "step": 6,
+      "name": "Log Email Timestamp",
+      "type": "Data Update",
+      "action": "Update the PO record with email_sent_timestamp",
+      "platforms": [
+        {
+          "name": "Google Sheets",
+          "action": "Update Row",
+          "filter": "PO Number = {{step3.po_data.po_number}}",
+          "column": "Email Sent At",
+          "value": "{{now}}"
+        }
+      ]
+    },
+    
+    {
+      "step": 7,
+      "name": "Wait for Response",
+      "type": "Delay",
+      "duration": "24 hours",
+      "note": "Waiting period for supplier to respond"
+    },
+    
+    {
+      "step": 8,
+      "name": "Check Supplier Response",
+      "type": "Router/Conditional",
+      "description": "Check if supplier has replied to PO email",
+      "routes": [
+        {
+          "route": "A",
+          "condition": "Supplier Confirmed",
+          "check_methods": [
+            {
+              "method": "Gmail/Outlook Search",
+              "query": "subject:({{step3.po_data.po_number}}) from:({{step3.po_data.supplier.email}}) after:{{step6.email_sent_timestamp}}",
+              "has_reply": true
+            },
+            {
+              "method": "Webhook Check",
+              "description": "Supplier confirms via webhook callback",
+              "url": "/webhook/po-confirmed",
+              "status": "confirmed"
+            },
+            {
+              "method": "Manual Status Update",
+              "check": "Sheet status column = 'Confirmed'"
+            }
+          ],
+          "actions": [
+            {
+              "step": "8a",
+              "action": "Update PO Status",
+              "platform": "Google Sheets/Airtable",
+              "set_status": "Confirmed",
+              "set_field": {
+                "Status": "Confirmed",
+                "Confirmed At": "{{now}}",
+                "Confirmed By": "Primary Supplier"
+              }
+            },
+            {
+              "step": "8b",
+              "action": "Update Inventory Dashboard",
+              "platform": "Google Sheets/Database",
+              "set_field": {
+                "Expected Delivery": "{{step3.po_data.requested_delivery}}",
+                "Incoming Stock": "{{step3.po_data.quantity}}"
+              }
+            },
+            {
+              "step": "8c",
+              "action": "Send Success Notification",
+              "platform": "Slack",
+              "channel": "#procurement",
+              "message": "✅ PO {{step3.po_data.po_number}} confirmed by {{step3.po_data.supplier.name}}. Expected delivery: {{step3.po_data.requested_delivery}}"
+            }
+          ]
+        },
+        {
+          "route": "B",
+          "condition": "No Response from Supplier",
+          "actions": [
+            {
+              "step": "8d",
+              "action": "Generate Escalation Email",
+              "type": "HTTP Request",
+              "method": "POST",
+              "url": "https://your-server.com/webhook/escalate-po",
+              "body": {
+                "po_data": "{{step3.po_data}}",
+                "backup_supplier": "{{step3.backup_supplier}}",
+                "primary_supplier_name": "{{step3.po_data.supplier.name}}"
+              },
+              "output": {
+                "escalation_data": "{{response.escalation_data}}",
+                "escalation_email": "{{response.email}}"
+              }
+            },
+            {
+              "step": "8e",
+              "action": "Update PO Status to Escalated",
+              "platform": "Google Sheets/Airtable",
+              "set_field": {
+                "Status": "Escalated",
+                "Escalated At": "{{now}}",
+                "Escalation Reason": "Primary supplier no response after 24h",
+                "New Supplier": "{{step8d.escalation_data.supplier_name}}"
+              }
+            },
+            {
+              "step": "8f",
+              "action": "Send Escalation Email to Backup",
+              "platform": "Gmail/Outlook/SendGrid",
+              "config": {
+                "to": "{{step8d.escalation_email.to}}",
+                "subject": "{{step8d.escalation_email.subject}}",
+                "body": "{{step8d.escalation_email.body}}",
+                "priority": "High",
+                "importance": "High"
+              }
+            },
+            {
+              "step": "8g",
+              "action": "Alert Operations Team",
+              "platform": "Slack",
+              "channel": "#procurement-urgent",
+              "message": "⚠️ ESCALATION: PO {{step3.po_data.po_number}} escalated to backup supplier {{step8d.escalation_data.supplier_name}}. Primary supplier ({{step3.po_data.supplier.name}}) did not respond within 24 hours.\n\nProduct: {{step3.po_data.product}}\nCurrent Stock: {{step3.po_data.current_stock}}\nQuantity Ordered: {{step3.po_data.quantity}}\n\nBackup supplier must confirm within 12 hours.",
+              "mention": "@ops-team"
+            },
+            {
+              "step": "8h",
+              "action": "Send SMS Alert (Optional)",
+              "platform": "Twilio",
+              "to": "{{env.OPS_MANAGER_PHONE}}",
+              "message": "URGENT: PO {{step3.po_data.po_number}} escalated to backup supplier. Check Slack for details."
+            }
+          ]
+        }
+      ]
+    },
+    
+    {
+      "step": 9,
+      "name": "Update Master Dashboard",
+      "type": "Data Sync",
+      "description": "Final dashboard update with current status",
+      "platforms": [
+        {
+          "name": "Google Sheets",
+          "action": "Update Row",
+          "sheet": "Inventory Dashboard",
+          "filter": "SKU = {{step1.sku}}",
+          "fields": {
+            "Last PO Number": "{{step3.po_data.po_number}}",
+            "Last PO Date": "{{step3.po_data.created_at}}",
+            "PO Status": "{{step8.final_status}}",
+            "Expected Delivery": "{{step8.delivery_date}}",
+            "Last Checked": "{{now}}"
+          }
+        },
+        {
+          "name": "Dashboard Visualization",
+          "platform": "Google Data Studio / Tableau / PowerBI",
+          "metrics_to_update": [
+            "Total Active POs",
+            "Pending Confirmations",
+            "Escalated Orders",
+            "Low Stock Items"
+          ]
+        }
+      ]
+    }
+  ],
+  
+  "configuration": {
+    "environment_variables": {
+      "API_KEY": "Your webhook API key",
+      "WEBHOOK_URL": "https://your-server.com",
+      "OPS_MANAGER_PHONE": "+1-555-0100",
+      "PROCUREMENT_EMAIL": "procurement@yourcompany.com"
+    },
+    
+    "supplier_mapping": {
+      "description": "Map products to their primary and backup suppliers",
+      "storage": "Google Sheets or Airtable",
+      "columns": [
+        "Product Name",
+        "SKU",
+        "Primary Supplier Name",
+        "Primary Supplier Email",
+        "Primary Supplier Phone",
+        "Backup Supplier Name",
+        "Backup Supplier Email",
+        "Backup Supplier Phone",
+        "Reorder Threshold",
+        "Lead Time Days"
+      ]
+    },
+    
+    "notification_preferences": {
+      "slack_channels": {
+        "routine": "#procurement",
+        "urgent": "#procurement-urgent"
+      },
+      "email_recipients": {
+        "cc_on_pos": ["operations@company.com", "finance@company.com"],
+        "escalation_alerts": ["ops-manager@company.com", "procurement-head@company.com"]
+      }
+    }
+  },
+  
+  "platform_specific_notes": {
+    "make_com": {
+      "advantages": [
+        "Visual flow builder",
+        "Native HTTP modules",
+        "Built-in delay and routing",
+        "Better error handling"
+      ],
+      "modules_needed": [
+        "HTTP - Make a request",
+        "Google Sheets - Add/Update row",
+        "Gmail - Send email",
+        "Slack - Send message",
+        "Tools - Sleep/Delay",
+        "Router"
+      ]
+    },
+    
+    "zapier": {
+      "requirements": [
+        "Professional plan (for multi-step zaps)",
+        "Delay Until (built-in)",
+        "Paths (for conditional logic)",
+        "Formatter (for data manipulation)"
+      ],
+      "limitations": [
+        "More expensive for complex workflows",
+        "Limited loop iterations",
+        "Harder to debug"
+      ]
+    },
+    
+    "n8n": {
+      "advantages": [
+        "Self-hosted option",
+        "Unlimited workflows",
+        "Advanced logic with JavaScript",
+        "Cost-effective"
+      ],
+      "setup": "Requires deployment to VPS/cloud server"
+    }
+  },
+  
+  "testing_checklist": [
+    "Test with stock level exactly at threshold",
+    "Test with stock level above threshold (should not trigger)",
+    "Test with stock level below threshold (should trigger)",
+    "Test PO number generation uniqueness",
+    "Test business day calculation (skip weekends)",
+    "Test email delivery to primary supplier",
+    "Test 24-hour delay mechanism",
+    "Test escalation when no response detected",
+    "Test Slack notifications",
+    "Test dashboard updates at each step"
+  ]
+}
