@@ -1,0 +1,7 @@
+Product Name,SKU,Current Stock,Reorder Threshold,Primary Supplier,Primary Email,Primary Phone,Backup Supplier,Backup Email,Backup Phone
+Industrial Ball Bearings 6202-2RS,BB-6202-2RS,45,100,Acme Bearings Inc.,orders@acmebearings.com,+1-555-0123,Reliable Parts Co.,urgent@reliableparts.com,+1-555-9999
+Hydraulic Pump Model HP-500,HP-500-STD,15,50,Hydraulics Direct Ltd.,sales@hydraulicsdirect.com,+44-20-1234-5678,Global Pumps Inc.,orders@globalpumps.com,+1-555-7777
+Premium Motor Oil 10W-40,OIL-10W40-5L,20,100,Oil Supplies Co.,orders@oilsupplies.com,+1-555-4444,Reliable Lubricants Inc.,urgent@reliablelubricants.com,+1-555-5555
+Stainless Steel Bolts M8x50,BOLT-M8-50-SS,250,200,Fasteners Direct,sales@fastenersdirect.com,+1-555-6666,Hardware Wholesale,orders@hardwarewholesale.com,+1-555-8888
+Electrical Wire 14AWG 100ft,WIRE-14AWG-100,30,75,Electric Supply Co.,orders@electricsupply.com,+1-555-3333,Wire Warehouse,sales@wirewarehouse.com,+1-555-2222
+Safety Goggles Clear,SAFE-GOGGLES-CLR,15,50,Safety First Inc.,orders@safetyfirst.com,+1-555-1111,ProSafe Equipment,sales@prosafe.com,+1-555-0000
